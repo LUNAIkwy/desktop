@@ -1,5 +1,5 @@
 use super::replay::replay_prefix;
-use super::support::runtime_internal;
+use super::support::{session_event_overflow, session_history_unreadable};
 use crate::BackendError;
 use agent_client_protocol_schema::v1::{SessionUpdate, StopReason};
 use ora_contracts::LoadSessionEvent;
@@ -71,8 +71,7 @@ impl SessionFollowers {
                         match signal {
                             Some(()) => {
                                 let _ = contract_sender
-                                    .send(Err(runtime_internal(
-                                        "session_follower_overflow",
+                                    .send(Err(session_event_overflow(
                                         "session load follower fell behind the active prompt",
                                     )))
                                     .await;
@@ -104,9 +103,7 @@ impl SessionFollowers {
     /// Mirrors one provider update to every view that still has the session open.
     pub(super) fn send_update(&mut self, update: &SessionUpdate) {
         self.followers.retain(|_, follower| {
-            let event = LoadSessionEvent::SessionUpdate {
-                update: update.clone(),
-            };
+            let event = LoadSessionEvent::session_update(update.clone());
             match follower.events.try_send(Ok(event)) {
                 Ok(()) => true,
                 Err(mpsc::error::TrySendError::Full(_)) => {
@@ -124,7 +121,7 @@ impl SessionFollowers {
             tokio::spawn(async move {
                 if follower
                     .events
-                    .send(Ok(LoadSessionEvent::TurnEnded { stop_reason }))
+                    .send(Ok(LoadSessionEvent::turn_ended(stop_reason)))
                     .await
                     .is_ok()
                 {
@@ -155,10 +152,7 @@ async fn send_replay_prefix(
             Ok(Ok(history)) => history,
             Ok(Err(_)) | Err(_) => {
                 let _ = contract_sender
-                    .send(Err(runtime_internal(
-                        "session_history_unreadable",
-                        "session history could not be read",
-                    )))
+                    .send(Err(session_history_unreadable()))
                     .await;
                 return false;
             }
@@ -232,10 +226,8 @@ mod tests {
                     .map(|result| result.map_err(|error| error.to_string())),
             ],
             [
-                Some(Ok(LoadSessionEvent::SessionUpdate { update })),
-                Some(Ok(LoadSessionEvent::TurnEnded {
-                    stop_reason: StopReason::EndTurn,
-                })),
+                Some(Ok(LoadSessionEvent::session_update(update))),
+                Some(Ok(LoadSessionEvent::turn_ended(StopReason::EndTurn))),
                 Some(Ok(LoadSessionEvent::Completed)),
             ],
         );
